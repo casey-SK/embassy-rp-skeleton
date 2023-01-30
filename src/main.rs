@@ -2,21 +2,15 @@
 #![no_main]
 #![feature(type_alias_impl_trait)]
 
-use defmt::{info, panic};
-use embassy_rp::peripherals::USB;
-use embassy_time::{Duration, Timer};
 use embassy_executor::Spawner;
+use embassy_rp::{interrupt, peripherals::USB, usb::{Driver, Instance}};
+use embassy_time::{Duration, Timer};
+use embassy_usb::{Builder, Config, UsbDevice, driver::EndpointError, class::cdc_acm::{CdcAcmClass, State}};
 use static_cell::StaticCell;
-use embassy_rp::interrupt;
-use embassy_rp::usb::{Driver, Instance};
-use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
-use embassy_usb::driver::EndpointError;
-use embassy_usb::{Builder, Config, UsbDevice};
+use defmt::{info, panic};
 use {defmt_rtt as _, panic_probe as _};
 
-
 type MyDriver = Driver<'static, USB>;
-
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -81,10 +75,7 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(usb_task(usb)).unwrap();
     spawner.spawn(echo_task(class)).unwrap();
-
-    
 }
-
 
 
 #[embassy_executor::task]
@@ -101,9 +92,6 @@ async fn echo_task(mut class: CdcAcmClass<'static, MyDriver>) {
         info!("Disconnected");
     }
 }
-
-
-
 
 struct Disconnected {}
 
