@@ -3,17 +3,23 @@
 #![feature(type_alias_impl_trait)]
 
 use defmt::{info, panic};
+use embassy_rp::peripherals::USB;
+use embassy_time::{Duration, Timer};
 use embassy_executor::Spawner;
-use embassy_futures::join::join;
+use static_cell::StaticCell;
 use embassy_rp::interrupt;
 use embassy_rp::usb::{Driver, Instance};
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::driver::EndpointError;
-use embassy_usb::{Builder, Config};
+use embassy_usb::{Builder, Config, UsbDevice};
 use {defmt_rtt as _, panic_probe as _};
 
+
+type MyDriver = Driver<'static, USB>;
+
+
 #[embassy_executor::main]
-async fn main(_spawner: Spawner) {
+async fn main(spawner: Spawner) {
     info!("Hello there!");
 
     let p = embassy_rp::init(Default::default());
@@ -39,46 +45,65 @@ async fn main(_spawner: Spawner) {
 
     // Create embassy-usb DeviceBuilder using the driver and config.
     // It needs some buffers for building the descriptors.
-    let mut device_descriptor = [0; 256];
-    let mut config_descriptor = [0; 256];
-    let mut bos_descriptor = [0; 256];
-    let mut control_buf = [0; 64];
-
-    let mut state = State::new();
+    struct Resources {
+        device_descriptor: [u8; 256],
+        config_descriptor: [u8; 256],
+        bos_descriptor: [u8; 256],
+        control_buf: [u8; 64],
+        serial_state: State<'static>,
+    }
+    static RESOURCES: StaticCell<Resources> = StaticCell::new();
+    let res = RESOURCES.init(Resources {
+        device_descriptor: [0; 256],
+        config_descriptor: [0; 256],
+        bos_descriptor: [0; 256],
+        control_buf: [0; 64],
+        serial_state: State::new(),
+    });
 
     let mut builder = Builder::new(
         driver,
         config,
-        &mut device_descriptor,
-        &mut config_descriptor,
-        &mut bos_descriptor,
-        &mut control_buf,
+        &mut res.device_descriptor,
+        &mut res.config_descriptor,
+        &mut res.bos_descriptor,
+        &mut res.control_buf,
         None,
     );
 
     // Create classes on the builder.
-    let mut class = CdcAcmClass::new(&mut builder, &mut state, 64);
+    let class = CdcAcmClass::new(&mut builder, &mut res.serial_state, 64);
 
     // Build the builder.
-    let mut usb = builder.build();
+    let usb = builder.build();
 
-    // Run the USB device.
-    let usb_fut = usb.run();
+    Timer::after(Duration::from_millis(1_000)).await;
 
-    // Do stuff with the class!
-    let echo_fut = async {
-        loop {
-            class.wait_connection().await;
-            info!("Connected");
-            let _ = echo(&mut class).await;
-            info!("Disconnected");
-        }
-    };
+    spawner.spawn(usb_task(usb)).unwrap();
+    spawner.spawn(echo_task(class)).unwrap();
 
-    // Run everything concurrently.
-    // If we had made everything `'static` above instead, we could do this using separate tasks instead.
-    join(usb_fut, echo_fut).await;
+    
 }
+
+
+
+#[embassy_executor::task]
+async fn usb_task(mut device: UsbDevice<'static, MyDriver>) {
+    device.run().await;
+}
+
+#[embassy_executor::task]
+async fn echo_task(mut class: CdcAcmClass<'static, MyDriver>) {
+    loop {
+        class.wait_connection().await;
+        info!("Connected");
+        let _ = echo(&mut class).await;
+        info!("Disconnected");
+    }
+}
+
+
+
 
 struct Disconnected {}
 
@@ -92,11 +117,8 @@ impl From<EndpointError> for Disconnected {
 }
 
 async fn echo<'d, T: Instance + 'd>(class: &mut CdcAcmClass<'d, Driver<'d, T>>) -> Result<(), Disconnected> {
-    let mut buf = [0; 64];
     loop {
-        let n = class.read_packet(&mut buf).await?;
-        let data = &buf[..n];
-        info!("data: {:x}", data);
-        class.write_packet(data).await?;
+        class.write_packet(b"Hello World!\r\n").await?;
+        Timer::after(Duration::from_secs(2)).await;
     }
 }

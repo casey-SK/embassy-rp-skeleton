@@ -17,6 +17,7 @@ embassy-rp = { version = "0.1.0", git = "https://github.com/embassy-rs/embassy",
 embassy-usb = { version = "0.1.0", git = "https://github.com/embassy-rs/embassy", features = ["defmt"] }
 embassy-futures = { version = "0.1.0", git = "https://github.com/embassy-rs/embassy"}
 
+static_cell = "1.0"
 
 
 dht-sensor = "0.2.1"
