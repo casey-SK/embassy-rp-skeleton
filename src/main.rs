@@ -2,71 +2,101 @@
 #![no_main]
 #![feature(type_alias_impl_trait)]
 
+use defmt::{info, panic};
 use embassy_executor::Spawner;
-use embassy_rp::gpio::{Pin, AnyPin, Level, Output, Flex};
-use embassy_time::{Duration, Timer, Delay};
+use embassy_futures::join::join;
+use embassy_rp::interrupt;
+use embassy_rp::usb::{Driver, Instance};
+use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
+use embassy_usb::driver::EndpointError;
+use embassy_usb::{Builder, Config};
 use {defmt_rtt as _, panic_probe as _};
-use defmt::info;
-
-
-use dht_sensor::*;
 
 #[embassy_executor::main]
-async fn main(spawner: Spawner) {
+async fn main(_spawner: Spawner) {
+    info!("Hello there!");
+
     let p = embassy_rp::init(Default::default());
 
-    let led_red: AnyPin = (p.PIN_2).degrade();
-    let led_green: AnyPin = (p.PIN_1).degrade();
+    // Create the driver, from the HAL.
+    let irq = interrupt::take!(USBCTRL_IRQ);
+    let driver = Driver::new(p.USB, irq);
 
-    let t1 = Duration::from_millis(1_000);
-    let t2 = Duration::from_millis(450);
+    // Create embassy-usb Config
+    let mut config = Config::new(0xc0de, 0xcafe);
+    config.manufacturer = Some("Embassy");
+    config.product = Some("USB-serial example");
+    config.serial_number = Some("12345678");
+    config.max_power = 100;
+    config.max_packet_size_0 = 64;
 
-    let dht_pin: AnyPin = (p.PIN_6).degrade();
+    // Required for windows compatiblity.
+    // https://developer.nordicsemi.com/nRF_Connect_SDK/doc/1.9.1/kconfig/CONFIG_CDC_ACM_IAD.html#help
+    config.device_class = 0xEF;
+    config.device_sub_class = 0x02;
+    config.device_protocol = 0x01;
+    config.composite_with_iads = true;
 
-    spawner.spawn(blinker_red(led_red, t1)).unwrap();
-    spawner.spawn(blinker_green(led_green, t2)).unwrap();
-    spawner.spawn(dht_read(dht_pin)).unwrap();
-}
+    // Create embassy-usb DeviceBuilder using the driver and config.
+    // It needs some buffers for building the descriptors.
+    let mut device_descriptor = [0; 256];
+    let mut config_descriptor = [0; 256];
+    let mut bos_descriptor = [0; 256];
+    let mut control_buf = [0; 64];
 
-#[embassy_executor::task]
-async fn blinker_red(pin: AnyPin, interval: Duration) {
-    //let mut led = Output::new(pin, Level::Low);
-    let mut led = Flex::new(pin);
-    led.set_as_output();
-    loop {
-        led.set_high();
-        Timer::after(interval).await;
-        led.set_low();
-        Timer::after(interval).await;
-    }
-}
+    let mut state = State::new();
 
-#[embassy_executor::task]
-async fn blinker_green(pin: AnyPin, interval: Duration) {
-    let mut led = Output::new(pin, Level::Low);
-    loop {
-        led.set_high();
-        Timer::after(interval).await;
-        led.set_low();
-        Timer::after(interval).await;
-    }
-}
+    let mut builder = Builder::new(
+        driver,
+        config,
+        &mut device_descriptor,
+        &mut config_descriptor,
+        &mut bos_descriptor,
+        &mut control_buf,
+        None,
+    );
 
-#[embassy_executor::task]
-async fn dht_read(pin: AnyPin) {
-    let mut pins = Flex::new(pin);
-    pins.set_as_output();
-    pins.set_high();
-    Timer::after(Duration::from_millis(1_000)).await;
+    // Create classes on the builder.
+    let mut class = CdcAcmClass::new(&mut builder, &mut state, 64);
 
-    loop {
-        match dht11::Reading::read(&mut Delay, &mut pins) {
-            Ok(dht11::Reading {
-                temperature,
-                relative_humidity,
-            }) => info!("{}°, {}% RH", temperature, relative_humidity),
-            Err(_) => info!("Error"),
+    // Build the builder.
+    let mut usb = builder.build();
+
+    // Run the USB device.
+    let usb_fut = usb.run();
+
+    // Do stuff with the class!
+    let echo_fut = async {
+        loop {
+            class.wait_connection().await;
+            info!("Connected");
+            let _ = echo(&mut class).await;
+            info!("Disconnected");
         }
-        Timer::after(Duration::from_millis(2_000)).await;
+    };
+
+    // Run everything concurrently.
+    // If we had made everything `'static` above instead, we could do this using separate tasks instead.
+    join(usb_fut, echo_fut).await;
+}
+
+struct Disconnected {}
+
+impl From<EndpointError> for Disconnected {
+    fn from(val: EndpointError) -> Self {
+        match val {
+            EndpointError::BufferOverflow => panic!("Buffer overflow"),
+            EndpointError::Disabled => Disconnected {},
+        }
+    }
+}
+
+async fn echo<'d, T: Instance + 'd>(class: &mut CdcAcmClass<'d, Driver<'d, T>>) -> Result<(), Disconnected> {
+    let mut buf = [0; 64];
+    loop {
+        let n = class.read_packet(&mut buf).await?;
+        let data = &buf[..n];
+        info!("data: {:x}", data);
+        class.write_packet(data).await?;
     }
 }
