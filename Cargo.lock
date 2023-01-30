@@ -206,6 +206,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dht-sensor"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74d643854f324f02daea7153ebbfec5cfcc2f395faf1c7011be65e543570de28"
+dependencies = [
+ "embedded-hal 0.2.7",
+]
+
+[[package]]
 name = "embassy-cortex-m"
 version = "0.1.0"
 source = "git+https://github.com/embassy-rs/embassy#eeb1515e9fd093e4a9797abac25ca657e1e35dc3"
@@ -308,6 +317,7 @@ dependencies = [
  "cortex-m-rt",
  "defmt",
  "defmt-rtt",
+ "dht-sensor",
  "embassy-executor",
  "embassy-rp",
  "embassy-time",
